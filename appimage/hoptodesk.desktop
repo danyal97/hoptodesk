@@ -4,11 +4,11 @@ Name=HopToDesk
 GenericName=Remote Desktop Software
 Comment=Remote Desktop Software
 Exec=hoptodesk
-Icon=hoptodesk
+Icon=com.hoptodesk.HopToDesk
 Terminal=false
 Type=Application
 StartupNotify=true
-Categories=Other;
+Categories=Network;RemoteAccess;GTK;
 Keywords=internet;
 Actions=new-window;
 

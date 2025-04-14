@@ -1,0 +1,128 @@
+name: Update HopToDesk Flatpak
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # Runs daily at 03:00 UTC (adjust as needed)
+  workflow_dispatch:      # Manual trigger
+  pull_request:
+
+jobs:
+  update-flatpak:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the Flathub repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Clone the shared-modules repository at specific commit
+      - name: Clone shared-modules
+        run: |
+            git clone https://github.com/flathub/shared-modules.git --depth 1
+            cd shared-modules
+            # Fetch just the single commit you need
+            git fetch --depth 1 origin f3909792316d1f7fc82052ee631cffedd08f6a2a
+            git checkout f3909792316d1f7fc82052ee631cffedd08f6a2a
+            cd ..
+            mkdir -p ./flatpak/shared-modules
+            cp -r shared-modules/* ./flatpak/shared-modules/
+
+      - name: Clone flathub
+        run: |
+            git clone https://github.com/flathub/com.hoptodesk.HopToDesk.git --depth 1
+            cd com.hoptodesk.HopToDesk
+            # Fetch just the single commit you need
+            cd ..
+            cp -r com.hoptodesk.HopToDesk/com.hoptodesk.HopToDesk.json ./flatpak/com.hoptodesk.HopToDesk.json
+
+      # Install dependencies: flatpak and flatpak-builder, plus jq and wget for processing.
+      - name: Install dependencies
+        run: |
+          # Wait for dpkg lock to be released (if held by another process)
+          while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+            echo "Waiting for dpkg lock to be released..."
+            sleep 1
+          done
+          sudo bash -c 'apt-get update && apt-get -y install flatpak flatpak-builder jq wget'
+
+      # Add Flathub remote in user mode.
+      - name: Add Flathub remote
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+      
+      # Download the latest HopToDesk deb package from its working URL.
+      - name: Download latest HopToDesk deb package
+        run: |
+          wget -O hoptodesk.deb "https://www.hoptodesk.com/hoptodesk.deb"
+
+      # Compute the SHA256 checksum of the downloaded deb file.
+      - name: Compute SHA256 of HopToDesk deb
+        id: compute_sha
+        run: |
+          SHA256=$(sha256sum hoptodesk.deb | cut -d' ' -f1)
+          echo "Computed SHA256: $SHA256"
+          echo "HOPTO_SHA256=$SHA256" >> $GITHUB_ENV
+
+      # Extract the package version from the deb metadata.
+      - name: Extract version from deb package
+        id: extract_version
+        run: |
+          ver=$(dpkg-deb --field hoptodesk.deb Version | tr -d '\n')
+          echo "Extracted version: $ver"
+          echo "HOPTO_VERSION=$ver" >> $GITHUB_ENV
+      
+      - name: Set new URL for HopToDesk deb package
+        run: |
+          # Change the URL below if you wish to use a different source.
+          echo "HOPTO_NEW_URL=https://www.hoptodesk.com/hoptodesk.deb" >> $GITHUB_ENV
+
+      - name: Update Flatpak manifest (com.hoptodesk.HopToDesk.json)
+        run: |
+          jq --arg ver "$HOPTO_VERSION" \
+            --arg sha "$HOPTO_SHA256" \
+            --arg url "$HOPTO_NEW_URL" \
+            '(.version) = $ver |
+              (.modules[] |=
+                if type=="object" then
+                  # Update the sources array: the deb package URL/sha and the desktop file path.
+                  (if .sources then
+                      .sources |= map(
+                        if (.url? and .url == "https://www.hoptodesk.com/hoptodesk-1.42.1-0-x86_64.deb")
+                        then (.url = $url | .sha256 = $sha)
+                        elif (.path? and .path == "com.hoptodesk.HopToDesk.desktop")
+                        then (.path = "../appimage/hoptodesk.desktop")
+                        else .
+                        end
+                      )
+                  else . end)
+                  |
+                  # If module name is "HopToDesk" and the build-commands exist, update the install command.
+                  (if .name == "HopToDesk" and .["build-commands"] then
+                      .["build-commands"] |= map(
+                        if . == "install -Dm644 com.hoptodesk.HopToDesk.desktop /app/share/applications/com.hoptodesk.HopToDesk.desktop"
+                        then "install -Dm644 hoptodesk.desktop /app/share/applications/com.hoptodesk.HopToDesk.desktop"
+                        else .
+                        end
+                      )
+                  else . end)
+                else
+                  .
+                end)' ./flatpak/com.hoptodesk.HopToDesk.json > tmp_manifest.json && mv tmp_manifest.json ./flatpak/com.hoptodesk.HopToDesk.json
+
+
+      # Build the Flatpak using the official command.
+      - name: Build Flatpak
+        run: |
+          flatpak-builder --force-clean --user --install-deps-from=flathub --repo=repo --install builddir ./flatpak/com.hoptodesk.HopToDesk.json
+
+      # Export the Flatpak bundle.
+      - name: Export Flatpak bundle
+        run: |
+          flatpak build-bundle ./repo hoptodesk.flatpak com.hoptodesk.HopToDesk --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: |
+            hoptodesk.flatpak
+            flatpak/com.hoptodesk.HopToDesk.json
