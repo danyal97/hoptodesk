@@ -1,0 +1,1 @@
+HopToDesk is a free and open source remote desktop application providing secure screen sharing, remote control, file transfer, and chat between connected peers. All communications are protected with true E2E (end-to-end) encryption and the application is free for both personal and business use.
