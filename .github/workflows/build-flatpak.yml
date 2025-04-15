@@ -6,6 +6,12 @@ on:
   workflow_dispatch:      # Manual trigger
   pull_request:
 
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  
 jobs:
   update-flatpak:
     runs-on: ubuntu-latest
@@ -14,18 +20,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Clone the shared-modules repository at specific commit
-      - name: Clone shared-modules
-        run: |
-            git clone https://github.com/flathub/shared-modules.git --depth 1
-            cd shared-modules
-            # Fetch just the single commit you need
-            git fetch --depth 1 origin f3909792316d1f7fc82052ee631cffedd08f6a2a
-            git checkout f3909792316d1f7fc82052ee631cffedd08f6a2a
-            cd ..
-            mkdir -p ./flatpak/shared-modules
-            cp -r shared-modules/* ./flatpak/shared-modules/
-
       - name: Clone flathub
         run: |
             git clone https://github.com/flathub/com.hoptodesk.HopToDesk.git --depth 1
@@ -33,6 +27,7 @@ jobs:
             # Fetch just the single commit you need
             cd ..
             cp -r com.hoptodesk.HopToDesk/com.hoptodesk.HopToDesk.json ./flatpak/com.hoptodesk.HopToDesk.json
+            rm -rf com.hoptodesk.HopToDesk
 
       # Install dependencies: flatpak and flatpak-builder, plus jq and wget for processing.
       - name: Install dependencies
@@ -88,18 +83,6 @@ jobs:
                       .sources |= map(
                         if (.url? and .url == "https://www.hoptodesk.com/hoptodesk-1.42.1-0-x86_64.deb")
                         then (.url = $url | .sha256 = $sha)
-                        elif (.path? and .path == "com.hoptodesk.HopToDesk.desktop")
-                        then (.path = "../appimage/hoptodesk.desktop")
-                        else .
-                        end
-                      )
-                  else . end)
-                  |
-                  # If module name is "HopToDesk" and the build-commands exist, update the install command.
-                  (if .name == "HopToDesk" and .["build-commands"] then
-                      .["build-commands"] |= map(
-                        if . == "install -Dm644 com.hoptodesk.HopToDesk.desktop /app/share/applications/com.hoptodesk.HopToDesk.desktop"
-                        then "install -Dm644 hoptodesk.desktop /app/share/applications/com.hoptodesk.HopToDesk.desktop"
                         else .
                         end
                       )
@@ -107,22 +90,42 @@ jobs:
                 else
                   .
                 end)' ./flatpak/com.hoptodesk.HopToDesk.json > tmp_manifest.json && mv tmp_manifest.json ./flatpak/com.hoptodesk.HopToDesk.json
-
-
-      # Build the Flatpak using the official command.
-      - name: Build Flatpak
+      
+      # 12. Push the changes and create a Pull Request in the upstream repository.
+      - name: Send pull-request
         run: |
-          flatpak-builder --force-clean --user --install-deps-from=flathub --repo=repo --install builddir ./flatpak/com.hoptodesk.HopToDesk.json
+          LATEST_TAG=$(git describe --tags --always --abbrev=0)
+          UPSTREAM_REPO="https://github.com/flathub/com.hoptodesk.HopToDesk"
+          FORK_REPO="https://github.com/danyal97/com.hoptodesk.HopToDesk"
+          FOLDER="com.hoptodesk.HopToDesk"
+          BRANCH_NAME="updated-hoptodesk-version"
 
-      # Export the Flatpak bundle.
-      - name: Export Flatpak bundle
-        run: |
-          flatpak build-bundle ./repo hoptodesk.flatpak com.hoptodesk.HopToDesk --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+          # Clone the upstream repository and change working directory to the folder it was cloned to.
+          git clone --depth=1 --branch=master $UPSTREAM_REPO
+          cd $FOLDER
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: flatpak
-          path: |
-            hoptodesk.flatpak
-            flatpak/com.hoptodesk.HopToDesk.json
+          # Setup the committers identity.
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          # Create a new feature branch for the changes.
+          git checkout -b $BRANCH_NAME
+
+          # Update the script files to the latest version.
+          cp -r ../flatpak/com.hoptodesk.HopToDesk.json com.hoptodesk.HopToDesk.json
+
+          # Commit the changes.
+          git add .
+          git commit -m "updated-hoptodesk-version"
+
+          # Add your fork as a remote.
+          git remote add fork $FORK_REPO
+
+          # Push the feature branch to your fork repository.
+          git push https://${GH_TOKEN}@github.com/danyal97/com.hoptodesk.HopToDesk.git $BRANCH_NAME
+
+          gh pr create \
+            --body "" \
+            --title "updated-hoptodesk-version" \
+            --head "danyal97:$BRANCH_NAME" \
+            --base "master"
